@@ -1,0 +1,36 @@
+// File: services/prism-tenant-service/Dockerfile.mono
+# --- Tahap 1: Builder ---
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Salin file manajemen dependensi
+COPY go.work go.work.sum ./
+# Salin semua go.mod dari setiap service
+COPY common/prism-common-libs/go.mod ./common/prism-common-libs/
+COPY services/prism-auth-service/go.mod ./services/prism-auth-service/
+COPY services/prism-user-service/go.mod ./services/prism-user-service/
+COPY services/prism-notification-service/go.mod ./services/prism-notification-service/
+COPY services/prism-file-service/go.mod ./services/prism-file-service/
+COPY services/prism-invitation-service/go.mod ./services/prism-invitation-service/
+COPY services/prism-tenant-service/go.mod ./services/prism-tenant-service/
+
+# Download dependensi agar bisa di-cache
+RUN go mod download
+
+# Salin semua source code
+COPY . .
+
+# Build aplikasi spesifik untuk service ini
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/main ./services/prism-tenant-service
+
+# --- Tahap 2: Final Image ---
+FROM alpine:latest
+
+WORKDIR /app
+
+COPY --from=builder /app/main .
+
+ENV SERVICE_NAME=prism-tenant-service
+
+CMD ["./main"]
