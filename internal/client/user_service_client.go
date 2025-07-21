@@ -1,4 +1,3 @@
-// File: services/prism-tenant-service/internal/client/user_service_client.go
 package client
 
 import (

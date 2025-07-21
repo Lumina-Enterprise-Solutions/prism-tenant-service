@@ -10,10 +10,13 @@ import (
 	"github.com/Lumina-Enterprise-Solutions/prism-tenant-service/internal/client"
 	"github.com/Lumina-Enterprise-Solutions/prism-tenant-service/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type TenantService interface {
 	CreateTenantWithAdmin(ctx context.Context, req *tenantv1.CreateTenantWithAdminRequest) (*tenantv1.CreateTenantWithAdminResponse, error)
+	GetTenantByName(ctx context.Context, name string) (*tenantv1.Tenant, error)
 }
 
 type tenantService struct {
@@ -33,20 +36,25 @@ func NewTenantService(db *pgxpool.Pool, tenantRepo repository.TenantRepository, 
 }
 
 func (s *tenantService) CreateTenantWithAdmin(ctx context.Context, req *tenantv1.CreateTenantWithAdminRequest) (*tenantv1.CreateTenantWithAdminResponse, error) {
-	// 1. Mulai transaksi database
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gagal memulai transaksi: %w", err)
 	}
-	defer tx.Rollback(ctx) // Pastikan rollback jika terjadi error
+	defer tx.Rollback(ctx)
 
-	// 2. Buat tenant baru
 	tenant, err := s.tenantRepo.Create(ctx, tx, req.GetOrganizationName(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("gagal membuat tenant: %w", err)
 	}
 
-	// 4. Panggil user-service untuk membuat admin user
+	if err := s.roleRepo.CreateDefaultRoles(ctx, tx, tenant.TenantID); err != nil {
+		return nil, fmt.Errorf("gagal membuat peran default: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("gagal commit transaksi pembuatan tenant: %w", err)
+	}
+
 	createUserReq := &userv1.CreateUserRequest{
 		Email:     req.GetAdminEmail(),
 		Password:  req.GetPasswordHash(),
@@ -57,15 +65,10 @@ func (s *tenantService) CreateTenantWithAdmin(ctx context.Context, req *tenantv1
 	}
 	createdUser, err := s.userServiceClient.CreateUser(ctx, createUserReq)
 	if err != nil {
+		log.Error().Err(err).Str("tenant_id", tenant.TenantID).Msg("KRITIS: Gagal membuat admin untuk tenant yang baru dibuat. Diperlukan tindakan manual.")
 		return nil, fmt.Errorf("gagal membuat admin user via gRPC: %w", err)
 	}
 
-	// 5. Jika semua berhasil, commit transaksi
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("gagal commit transaksi: %w", err)
-	}
-
-	// 6. Siapkan response
 	response := &tenantv1.CreateTenantWithAdminResponse{
 		TenantId: tenant.TenantID,
 		UserId:   createdUser.ID,
@@ -82,4 +85,26 @@ func (s *tenantService) CreateTenantWithAdmin(ctx context.Context, req *tenantv1
 	}
 
 	return response, nil
+}
+
+// GetTenantByName adalah implementasi baru.
+func (s *tenantService) GetTenantByName(ctx context.Context, name string) (*tenantv1.Tenant, error) {
+	// DIUBAH: Memanggil repo dengan s.db (pool), bukan transaksi.
+	tenant, err := s.tenantRepo.GetByName(ctx, s.db, name)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &tenantv1.Tenant{
+		TenantId:  tenant.TenantID,
+		Name:      tenant.Name,
+		CreatedAt: timestamppb.New(tenant.CreatedAt),
+		UpdatedAt: timestamppb.New(tenant.UpdatedAt),
+	}
+	// FIX: Lakukan pointer assignment secara langsung.
+	if tenant.Domain != nil {
+		resp.Domain = tenant.Domain
+	}
+
+	return resp, nil
 }

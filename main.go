@@ -1,4 +1,3 @@
-// File: services/prism-tenant-service/main.go (LENGKAP)
 package main
 
 import (
